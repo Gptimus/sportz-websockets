@@ -33,6 +33,12 @@ export function attachWebsocketServer(server) {
   });
 
   wss.on("connection", (socket) => {
+    socket.isAlive = true;
+
+    socket.on("pong", () => {
+      socket.isAlive = true;
+    });
+
     console.log("New WebSocket connection established");
 
     sendJson(socket, {
@@ -51,6 +57,24 @@ export function attachWebsocketServer(server) {
 
   wss.on("error", (error) => {
     console.error("WebSocket server error:", error);
+  });
+
+  // Cleanup dead clients every 30 seconds
+  const interval = setInterval(() => {
+    wss.clients.forEach((ws) => {
+      if (!ws.isAlive) {
+        console.log("Terminating dead client");
+        return ws.terminate();
+      }
+
+      ws.isAlive = false;
+      ws.ping();
+    });
+  }, 30000);
+
+  // Cleanup interval on server close
+  wss.on("close", () => {
+    clearInterval(interval);
   });
 
   /**
