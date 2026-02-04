@@ -1,4 +1,5 @@
 import { WebSocketServer, WebSocket } from "ws";
+import { wsArcjet } from "../arcjet.js";
 
 /**
  * Helper to send JSON payloads to a single socket
@@ -32,7 +33,24 @@ export function attachWebsocketServer(server) {
     maxPayload: 1024 * 1024,
   });
 
-  wss.on("connection", (socket) => {
+  wss.on("connection", async (socket, req) => {
+    if (wsArcjet) {
+      try {
+        const decision = await wsArcjet.protect(req);
+        if (decision.isDenied()) {
+          const code = decision.reason.isRateLimit() ? 1013 : 1008;
+          const reason = decision.reason.isRateLimit()
+            ? "Too Many Requests"
+            : "Forbidden";
+          socket.close(code, reason);
+          return;
+        }
+      } catch (error) {
+        console.error("WebSocket connection error:", error);
+        socket.close(1011, "Server security error");
+        return;
+      }
+    }
     socket.isAlive = true;
 
     socket.on("pong", () => {
