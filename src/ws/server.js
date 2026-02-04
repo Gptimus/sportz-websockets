@@ -36,7 +36,7 @@ export function attachWebsocketServer(server) {
   wss.on("connection", async (socket, req) => {
     if (wsArcjet) {
       try {
-        const decision = await wsArcjet.protect(socket);
+        const decision = await wsArcjet.protect(req);
         if (decision.isDenied()) {
           const code = decision.reason.isRateLimit() ? 1013 : 1008;
           const reason = decision.reason.isRateLimit()

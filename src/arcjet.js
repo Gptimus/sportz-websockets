@@ -8,7 +8,7 @@ if (!arcjetKey) {
 }
 
 export const httpArcjet = arcjetKey
-  ? new arcjet({
+  ? arcjet({
       key: arcjetKey,
       rules: [
         shield({ mode: arcjetMode }),
@@ -26,7 +26,7 @@ export const httpArcjet = arcjetKey
   : null;
 
 export const wsArcjet = arcjetKey
-  ? new arcjet({
+  ? arcjet({
       key: arcjetKey,
       rules: [
         shield({ mode: arcjetMode }),
