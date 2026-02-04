@@ -2,7 +2,48 @@ import { WebSocketServer, WebSocket } from "ws";
 import { wsArcjet } from "../arcjet.js";
 
 /**
- * Helper to send JSON payloads to a single socket
+ * Stores WebSocket subscribers for specific matches.
+ * Key: matchId (number)
+ * Value: Set of WebSocket instances
+ */
+const matchSubscribers = new Map();
+
+/**
+ * Adds a socket to the list of subscribers for a specific match.
+ */
+function subscribe(matchId, socket) {
+  if (!matchSubscribers.has(matchId)) {
+    matchSubscribers.set(matchId, new Set());
+  }
+  matchSubscribers.get(matchId).add(socket);
+}
+
+/**
+ * Removes a socket from the list of subscribers for a specific match.
+ * If no subscribers remain for that match, the entry is removed from the map.
+ */
+function unsubscribe(matchId, socket) {
+  const subscribers = matchSubscribers.get(matchId);
+  if (!subscribers) {
+    return;
+  }
+  subscribers.delete(socket);
+  if (subscribers.size === 0) {
+    matchSubscribers.delete(matchId);
+  }
+}
+
+/**
+ * Cleans up all active subscriptions for a closing socket.
+ */
+function cleanupDeadSubscriptions(socket) {
+  for (const matchId of socket.subscriptions) {
+    unsubscribe(matchId, socket);
+  }
+}
+
+/**
+ * Helper to send JSON payloads to a single socket.
  */
 function sendJson(socket, payload) {
   if (socket.readyState === WebSocket.OPEN) {
@@ -11,9 +52,10 @@ function sendJson(socket, payload) {
 }
 
 /**
- * Helper to broadcast JSON payloads to all connected clients
+ * Broadcasts a JSON payload to every single connected client.
+ * Currently used for 'match_created' events.
  */
-function broadcast(wss, payload) {
+function broadcastToAll(wss, payload) {
   const message = JSON.stringify(payload);
   wss.clients.forEach((client) => {
     if (client.readyState === WebSocket.OPEN) {
@@ -23,8 +65,67 @@ function broadcast(wss, payload) {
 }
 
 /**
- * Attaches the WebSocket server to the existing HTTP server
- * and returns broadcasting utilities.
+ * Broadcasts a JSON payload ONLY to clients subscribed to a specific match.
+ * Currently used for 'commentary_created' events.
+ */
+function broadcastToMatch(matchId, payload) {
+  const subscribers = matchSubscribers.get(matchId);
+  if (!subscribers || subscribers.size === 0) {
+    return;
+  }
+
+  const message = JSON.stringify(payload);
+
+  subscribers.forEach((socket) => {
+    if (socket.readyState === WebSocket.OPEN) {
+      socket.send(message);
+    }
+  });
+}
+
+/**
+ * Handles incoming messages from the client.
+ * Supports: 'subscribe' and 'unsubscribe' actions.
+ */
+const handleMessage = (socket, data) => {
+  let message;
+
+  try {
+    message = JSON.parse(data.toString());
+  } catch (error) {
+    sendJson(socket, {
+      type: "error",
+      message: "Invalid JSON",
+    });
+    return;
+  }
+
+  // Client wants to follow a specific match's live feed
+  if (message?.type === "subscribe" && Number.isInteger(message.matchId)) {
+    subscribe(message.matchId, socket);
+    socket.subscriptions.add(message.matchId);
+    sendJson(socket, {
+      type: "subscribed",
+      matchId: message.matchId,
+    });
+    return;
+  }
+
+  // Client wants to stop following a specific match
+  if (message?.type === "unsubscribe" && Number.isInteger(message.matchId)) {
+    unsubscribe(message.matchId, socket);
+    socket.subscriptions.delete(message.matchId);
+    sendJson(socket, {
+      type: "unsubscribed",
+      matchId: message.matchId,
+    });
+    return;
+  }
+};
+
+/**
+ * Initializes and attaches the WebSocket server to the core HTTP server.
+ * Implements security, heatbeats, and broadcasting utilities.
  */
 export function attachWebsocketServer(server) {
   const wss = new WebSocketServer({
@@ -34,6 +135,7 @@ export function attachWebsocketServer(server) {
   });
 
   wss.on("connection", async (socket, req) => {
+    // 🛡️ Security Check (Arcjet)
     if (wsArcjet) {
       try {
         const decision = await wsArcjet.protect(req);
@@ -51,25 +153,31 @@ export function attachWebsocketServer(server) {
         return;
       }
     }
-    socket.isAlive = true;
 
+    // ❤️ Heartbeat/Ping-Pong Setup
+    socket.isAlive = true;
     socket.on("pong", () => {
       socket.isAlive = true;
     });
 
     console.log("New WebSocket connection established");
 
+    // Initialize per-socket subscription tracking
+    socket.subscriptions = new Set();
+
     sendJson(socket, {
       type: "welcome",
       message: "Welcome to the Sportz API!",
     });
 
-    socket.on("error", (error) => {
-      console.error("WebSocket socket error:", error);
+    socket.on("message", (data) => handleMessage(socket, data));
+
+    socket.on("error", () => {
+      socket.terminate();
     });
 
     socket.on("close", () => {
-      console.log("WebSocket connection closed");
+      cleanupDeadSubscriptions(socket);
     });
   });
 
@@ -77,7 +185,8 @@ export function attachWebsocketServer(server) {
     console.error("WebSocket server error:", error);
   });
 
-  // Cleanup dead clients every 30 seconds
+  // 🧹 Periodic Cleanup (Every 30 seconds)
+  // Terminates connections that haven't responded to pings
   const interval = setInterval(() => {
     wss.clients.forEach((ws) => {
       if (!ws.isAlive) {
@@ -90,27 +199,36 @@ export function attachWebsocketServer(server) {
     });
   }, 30000);
 
-  // Cleanup interval on server close
+  // Clear interval when server closes to prevent memory leaks
   wss.on("close", () => {
     clearInterval(interval);
   });
 
   /**
-   * Utility to broadcast a 'match_created' event
+   * Global utility to notify all connected clients of new matches.
    */
   const broadcastMatchCreated = (match) => {
     console.log("Broadcasting match_created event:", match.id);
-    broadcast(wss, {
+    broadcastToAll(wss, {
       type: "match_created",
       data: match,
     });
   };
 
   /**
-   * Return both the server instance and the utilities
+   * Targeted utility to notify only match-specific subscribers of new commentary.
    */
+  const broadcastCommentaryCreated = (matchId, comment) => {
+    console.log("Broadcasting commentary_created event:", comment.id);
+    broadcastToMatch(matchId, {
+      type: "commentary_created",
+      data: comment,
+    });
+  };
+
   return {
     wss,
     broadcastMatchCreated,
+    broadcastCommentaryCreated,
   };
 }
