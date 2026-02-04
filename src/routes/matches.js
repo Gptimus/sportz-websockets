@@ -18,7 +18,7 @@ matchRouter.get("/", async (req, res) => {
   if (!parsedQuery.success) {
     return res.status(400).json({
       error: "Invalid query parameters",
-      details: parsedQuery.error.flatten(),
+      details: parsedQuery.error.issues,
     });
   }
 
@@ -33,9 +33,9 @@ matchRouter.get("/", async (req, res) => {
 
     return res.status(200).json({ data });
   } catch (error) {
+    console.error("Matches fetch error:", error);
     return res.status(500).json({
       error: "Failed to fetch matches",
-      message: error.message,
     });
   }
 });
@@ -46,7 +46,7 @@ matchRouter.post("/", async (req, res) => {
   if (!parsedData.success) {
     return res.status(400).json({
       error: "Invalid payload",
-      details: parsedData.error.flatten(),
+      details: parsedData.error.issues,
     });
   }
 
